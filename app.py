@@ -3,96 +3,108 @@ import pandas as pd
 import io
 from thefuzz import fuzz
 
-st.set_page_config(page_title="Custom AI Reconciler", layout="wide")
-
-def get_options(df):
-    return ["None"] + list(df.columns)
+st.set_page_config(page_title="Precision Reconciler", layout="wide")
 
 st.title("📑 Precision Ledger Reconciler")
+st.markdown("---")
 
 # Sidebar for File Uploads
 file_a = st.sidebar.file_uploader("Upload Ledger A (ERP)", type=['xlsx', 'csv'])
-file_b = st.sidebar.file_uploader("Upload Ledger B (Bank/Other)", type=['xlsx', 'csv'])
+file_b = st.sidebar.file_uploader("Upload Ledger B (Bank)", type=['xlsx', 'csv'])
 
 if file_a and file_b:
     df_a = pd.read_excel(file_a) if file_a.name.endswith('xlsx') else pd.read_csv(file_a)
     df_b = pd.read_excel(file_b) if file_b.name.endswith('xlsx') else pd.read_csv(file_b)
     
-    st.subheader("⚙️ Configure Matching Logic")
+    st.subheader("🔍 Column Configuration")
     
     col1, col2 = st.columns(2)
-    
     with col1:
-        st.write("### Ledger A Settings")
-        match_col_a = st.selectbox("Column to MATCH (e.g., ID, Ref, Invoice)", df_a.columns, key="ma")
-        recon_col_a = st.selectbox("Column to RECONCILE (e.g., Total Amount)", df_a.columns, key="ra")
+        st.info("Ledger A Settings")
+        match_a_1 = st.selectbox("Primary Match Field (e.g. ID)", df_a.columns, key="ma1")
+        match_a_2 = st.selectbox("Secondary Match Field (e.g. Date)", df_a.columns, key="ma2")
+        recon_a = st.selectbox("Column to RECONCILE (Value)", df_a.columns, key="ra")
         
     with col2:
-        st.write("### Ledger B Settings")
-        match_col_b = st.selectbox("Column to MATCH (e.g., Description, ID)", df_b.columns, key="mb")
-        recon_col_b = st.selectbox("Column to RECONCILE (e.g., Statement Amount)", df_b.columns, key="rb")
+        st.info("Ledger B Settings")
+        match_b_1 = st.selectbox("Primary Match Field (e.g. ID)", df_b.columns, key="mb1")
+        match_b_2 = st.selectbox("Secondary Match Field (e.g. Date)", df_b.columns, key="mb2")
+        recon_b = st.selectbox("Column to RECONCILE (Value)", df_b.columns, key="rb")
 
-    if st.button("🚀 Run Custom Reconciliation"):
-        # Initialize columns
+    if st.button("🚀 Run Precision Reconciliation"):
+        # 1. Initialize Results Columns
         df_a['Recon_Status'] = 'Unmatched'
-        df_a[f'B_{recon_col_b}'] = 0.0
-        df_a['Difference'] = df_a[recon_col_a] # Default diff is the full amount
+        df_a['B_Value'] = 0.0
+        df_a['Difference'] = df_a[recon_a] # Default difference is the total A value
         
         used_indices_b = set()
 
+        # 2. Matching Logic
         for idx_a, row_a in df_a.iterrows():
-            # Get the ID/Line to match on
-            id_a = str(row_a[match_col_a])
-            val_a = float(row_a[recon_col_a])
+            # Construct comparison keys
+            key_a = f"{str(row_a[match_a_1])} | {str(row_a[match_a_2])}"
+            val_a = round(float(row_a[recon_a]), 2)
 
-            # Filter B for potential matches based on ID similarity or exact match
-            # Here we use fuzzy matching on the IDs specifically
-            best_score = -1
-            best_idx_b = None
-            
-            # Optimization: only check unmatched rows in B
+            # Look for candidates in B that haven't been used yet
             candidates = df_b[~df_b.index.isin(used_indices_b)]
             
+            best_score = -1
+            best_idx_b = None
+
             for idx_b, row_b in candidates.iterrows():
-                id_b = str(row_b[match_col_b])
+                key_b = f"{str(row_b[match_b_1])} | {str(row_b[match_b_2])}"
                 
-                # Check for ID match
-                score = fuzz.token_sort_ratio(id_a, id_b)
-                
+                # Using fuzzy matching for the identity keys
+                score = fuzz.token_sort_ratio(key_a, key_b)
                 if score > best_score:
                     best_score = score
                     best_idx_b = idx_b
+                if score == 100: break
+
+            # 3. Validation Logic
+            if best_score >= 90: # High-confidence ID match
+                val_b = round(float(df_b.at[best_idx_b, recon_b]), 2)
+                diff = round(val_a - val_b, 2)
                 
-                # Exit early if perfect ID match found
-                if score == 100:
-                    break
-            
-            # If ID match is strong (e.g. >80), reconcile the amounts
-            if best_score >= 80:
-                val_b = float(df_b.at[best_idx_b, recon_col_b])
-                df_a.at[idx_a, 'Recon_Status'] = 'Matched'
-                df_a.at[idx_a, f'B_{recon_col_b}'] = val_b
-                df_a.at[idx_a, 'Difference'] = val_a - val_b
+                df_a.at[idx_a, 'B_Value'] = val_b
+                df_a.at[idx_a, 'Difference'] = diff
+                
+                # Strict Status Requirement: Only 'Matched' if difference is 0
+                if diff == 0:
+                    df_a.at[idx_a, 'Recon_Status'] = 'Matched'
+                else:
+                    df_a.at[idx_a, 'Recon_Status'] = 'Unmatched (Value Mismatch)'
+                
                 used_indices_b.add(best_idx_b)
 
-        # Create Pivot
+        # 4. Create Pivot Summary
         pivot_df = df_a.groupby('Recon_Status').agg({
-            recon_col_a: 'sum',
-            f'B_{recon_col_b}': 'sum',
+            recon_a: 'sum',
+            'B_Value': 'sum',
             'Difference': 'sum',
             'Recon_Status': 'count'
-        }).rename(columns={'Recon_Status': 'Count'}).reset_index()
+        }).rename(columns={'Recon_Status': 'Transaction Count'}).reset_index()
 
-        # Excel Export
+        # 5. Visual Summary & Download
+        st.divider()
+        st.subheader("📊 Reconciliation Summary")
+        st.table(pivot_df)
+
+        # Excel Export Logic
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            pivot_df.to_excel(writer, sheet_name='Summary', index=False)
-            df_a.to_excel(writer, sheet_name='Details', index=False)
+            pivot_df.to_excel(writer, sheet_name='Summary Pivot', index=False)
+            df_a.to_excel(writer, sheet_name='Detailed Comparison', index=False)
             
-            # Auto-adjust column widths
-            for sheet in writer.sheets.values():
-                sheet.set_column('A:Z', 18)
+            # Formatting the Excel
+            workbook = writer.book
+            worksheet = writer.sheets['Detailed Comparison']
+            money_fmt = workbook.add_format({'num_format': '#,##0.00'})
+            worksheet.set_column('A:Z', 15, money_fmt)
 
-        st.success("Analysis Complete!")
-        st.download_button("📥 Download Report", output.getvalue(), "Recon_Analysis.xlsx")
-        st.table(pivot_df)
+        st.download_button(
+            label="📥 Download Detailed Excel Report",
+            data=output.getvalue(),
+            file_name="Reconciliation_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
