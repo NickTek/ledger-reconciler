@@ -5,7 +5,7 @@ from thefuzz import fuzz
 
 st.set_page_config(page_title="Two-Way Reconciler", layout="wide")
 
-st.title("📑 Two-Way Precision Reconciler")
+st.title("📑Ledger Reconciler")
 st.markdown("---")
 
 file_a = st.sidebar.file_uploader("Upload Ledger A (ERP)", type=['xlsx', 'csv'])
